@@ -6,18 +6,23 @@ app.use(cors());
 app.use(express.json());
 
 const STORE = '4274e2-4b.myshopify.com';
-const TOKEN = process.env.SHOPIFY_TOKEN;
 const PORT = process.env.PORT || 3000;
-const API_VERSION = '2024-01';
+const API_VERSION = '2025-01';
+const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || '61264f971b9546b1a3fd628dbb25d57e';
+const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
 
-if (!TOKEN) console.warn('[WARN] SHOPIFY_TOKEN env variable not set');
+// Access token — set via env SHOPIFY_TOKEN, or exchanged via /oauth/callback
+let ACCESS_TOKEN = process.env.SHOPIFY_TOKEN || null;
+
+console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING'}`);
+console.log(`  Client Secret : ${CLIENT_SECRET ? '✓ set' : '✗ MISSING'}`);
 
 // ─── Shopify helper ───────────────────────────────────────────────────────────
 
 async function shopify(endpoint) {
   const url = `https://${STORE}/admin/api/${API_VERSION}/${endpoint}`;
   const res = await fetch(url, {
-    headers: { 'X-Shopify-Access-Token': TOKEN, 'Content-Type': 'application/json' }
+    headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
   });
   if (!res.ok) {
     const body = await res.text();
@@ -25,6 +30,36 @@ async function shopify(endpoint) {
   }
   return res.json();
 }
+
+// ─── OAuth token exchange ─────────────────────────────────────────────────────
+// GET /oauth/start  → redirects to Shopify OAuth page
+app.get('/oauth/start', (req, res) => {
+  const url = `https://${STORE}/admin/oauth/authorize?client_id=${CLIENT_ID}&scope=read_products,read_orders,read_all_orders&redirect_uri=https://${req.headers.host}/oauth/callback&state=mystic123`;
+  res.redirect(url);
+});
+
+// GET /oauth/callback  → exchanges code for permanent access token
+app.get('/oauth/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('Missing code');
+  try {
+    const r = await fetch(`https://${STORE}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code })
+    });
+    const data = await r.json();
+    if (data.access_token) {
+      ACCESS_TOKEN = data.access_token;
+      console.log(`✓ OAuth token exchanged: ${ACCESS_TOKEN.slice(0, 10)}...`);
+      res.send(`<h2>✓ Connected!</h2><p>Access token saved: <code>${ACCESS_TOKEN.slice(0, 10)}...</code></p><p>Add this to Railway as SHOPIFY_TOKEN: <strong>${ACCESS_TOKEN}</strong></p>`);
+    } else {
+      res.status(400).json(data);
+    }
+  } catch(e) {
+    res.status(500).send('Error: ' + e.message);
+  }
+});
 
 // Paginate through all pages (Shopify returns max 250 per page)
 async function shopifyAll(resource, params = '') {
@@ -46,7 +81,7 @@ async function shopifyAll(resource, params = '') {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', store: STORE, token_set: !!TOKEN });
+  res.json({ status: 'ok', store: STORE, token_set: !!ACCESS_TOKEN });
 });
 
 // GET /api/products — all active products + variants + inventory
@@ -194,5 +229,5 @@ app.get('/api/sync', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✓ Mystic backend running on port ${PORT}`);
   console.log(`  Store : ${STORE}`);
-  console.log(`  Token : ${TOKEN ? '✓ set' : '✗ MISSING'}`);
+  console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING — go to /oauth/start'}`);
 });
