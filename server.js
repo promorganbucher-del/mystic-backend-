@@ -61,18 +61,27 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Paginate through all pages (Shopify returns max 250 per page)
+// Paginate through all pages using cursor-based pagination
 async function shopifyAll(resource, params = '') {
   let items = [];
-  let page = 1;
-  while (true) {
-    const sep = params ? '&' : '?';
-    const data = await shopify(`${resource}.json?limit=250${params ? sep + params : ''}&page=${page}`);
+  let url = `https://${STORE}/admin/api/${API_VERSION}/${resource}.json?limit=250${params ? '&' + params : ''}`;
+  
+  while (url) {
+    const res = await fetch(url, {
+      headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Shopify ${res.status}: ${body}`);
+    }
+    const data = await res.json();
     const key = Object.keys(data)[0];
-    const batch = data[key];
-    items = items.concat(batch);
-    if (batch.length < 250) break;
-    page++;
+    items = items.concat(data[key]);
+    
+    // Check for next page via Link header
+    const linkHeader = res.headers.get('Link') || '';
+    const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+    url = nextMatch ? nextMatch[1] : null;
   }
   return items;
 }
