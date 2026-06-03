@@ -235,6 +235,31 @@ app.get('/api/sync', async (req, res) => {
   }
 });
 
+// GET /api/drafts — draft products only (for future drop preview)
+app.get('/api/drafts', async (req, res) => {
+  try {
+    const products = await shopifyAll('products', 'status=draft');
+    const result = products.map(p => ({
+      shopify_id: p.id,
+      title: p.title,
+      handle: p.handle,
+      image: p.images?.[0]?.src || null,
+      status: 'draft',
+      variants: p.variants.map(v => ({
+        shopify_variant_id: v.id,
+        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g, '-')}`,
+        title: v.title,
+        price: parseFloat(v.price),
+        stock: v.inventory_quantity ?? 0
+      }))
+    }));
+    res.json({ products: result, count: result.length });
+  } catch (err) {
+    console.error('[/api/drafts]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✓ Mystic backend running on port ${PORT}`);
   console.log(`  Store : ${STORE}`);
