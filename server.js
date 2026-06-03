@@ -7,7 +7,7 @@ app.use(express.json());
 
 const STORE = '4274e2-4b.myshopify.com';
 const PORT = process.env.PORT || 3000;
-const API_VERSION = '2025-01';
+const API_VERSION = '2025-10';  // ← UPDATED (was 2025-01, now sunset)
 const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || '61264f971b9546b1a3fd628dbb25d57e';
 const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
 
@@ -16,6 +16,7 @@ let ACCESS_TOKEN = process.env.SHOPIFY_TOKEN || null;
 
 console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING'}`);
 console.log(`  Client Secret : ${CLIENT_SECRET ? '✓ set' : '✗ MISSING'}`);
+console.log(`  API version : ${API_VERSION}`);
 
 // ─── Shopify helper ───────────────────────────────────────────────────────────
 
@@ -32,13 +33,11 @@ async function shopify(endpoint) {
 }
 
 // ─── OAuth token exchange ─────────────────────────────────────────────────────
-// GET /oauth/start  → redirects to Shopify OAuth page
 app.get('/oauth/start', (req, res) => {
   const url = `https://${STORE}/admin/oauth/authorize?client_id=${CLIENT_ID}&scope=read_products,read_orders,read_all_orders&redirect_uri=https://${req.headers.host}/oauth/callback&state=mystic123`;
   res.redirect(url);
 });
 
-// GET /oauth/callback  → exchanges code for permanent access token
 app.get('/oauth/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('Missing code');
@@ -65,7 +64,7 @@ app.get('/oauth/callback', async (req, res) => {
 async function shopifyAll(resource, params = '') {
   let items = [];
   let url = `https://${STORE}/admin/api/${API_VERSION}/${resource}.json?limit=250${params ? '&' + params : ''}`;
-  
+
   while (url) {
     const res = await fetch(url, {
       headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
@@ -77,7 +76,7 @@ async function shopifyAll(resource, params = '') {
     const data = await res.json();
     const key = Object.keys(data)[0];
     items = items.concat(data[key]);
-    
+
     // Check for next page via Link header
     const linkHeader = res.headers.get('Link') || '';
     const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
@@ -90,7 +89,7 @@ async function shopifyAll(resource, params = '') {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', store: STORE, token_set: !!ACCESS_TOKEN });
+  res.json({ status: 'ok', store: STORE, token_set: !!ACCESS_TOKEN, api_version: API_VERSION });
 });
 
 // GET /api/products — all active products + variants + inventory
@@ -129,12 +128,13 @@ app.get('/api/orders', async (req, res) => {
     const sinceISO = since.toISOString();
 
     const orders = await shopifyAll('orders',
-      `status=any&financial_status=paid&created_at_min=${sinceISO}&fulfillment_status=any`
+      `status=any&created_at_min=${sinceISO}`
     );
 
-    // Aggregate quantity sold per SKU
-    const sales = {}; // { sku: { qty, variant_id, title } }
+    // Aggregate quantity sold per SKU (paid orders only)
+    const sales = {};
     orders.forEach(order => {
+      if (order.financial_status !== 'paid' && order.financial_status !== 'partially_paid') return;
       order.line_items.forEach(item => {
         const sku = item.sku || String(item.variant_id);
         if (!sales[sku]) {
@@ -196,18 +196,21 @@ app.get('/api/sync', async (req, res) => {
         const since = new Date();
         since.setDate(since.getDate() - days);
         const orders = await shopifyAll('orders',
-          `status=any&financial_status=paid&created_at_min=${since.toISOString()}`
+          `status=any&created_at_min=${since.toISOString()}`
         );
         const sales = {};
-        const market = {}; // { country_code: { qty, revenue } }
+        const market = {};
         orders.forEach(order => {
-          // Velocity per SKU
-          order.line_items.forEach(item => {
-            const sku = item.sku || String(item.variant_id);
-            if (!sales[sku]) sales[sku] = { qty: 0 };
-            sales[sku].qty += item.quantity;
-          });
-          // Market breakdown
+          // Only count paid orders for velocity
+          const isPaid = order.financial_status === 'paid' || order.financial_status === 'partially_paid';
+          if (isPaid) {
+            order.line_items.forEach(item => {
+              const sku = item.sku || String(item.variant_id);
+              if (!sales[sku]) sales[sku] = { qty: 0 };
+              sales[sku].qty += item.quantity;
+            });
+          }
+          // Market breakdown — all orders
           const country = order.billing_address?.country_code || order.shipping_address?.country_code || 'XX';
           if (!market[country]) market[country] = { qty: 0, revenue: 0 };
           market[country].qty += 1;
@@ -263,5 +266,6 @@ app.get('/api/drafts', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✓ Mystic backend running on port ${PORT}`);
   console.log(`  Store : ${STORE}`);
+  console.log(`  API   : ${API_VERSION}`);
   console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING — go to /oauth/start'}`);
 });
