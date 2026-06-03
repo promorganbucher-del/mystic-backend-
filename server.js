@@ -7,32 +7,45 @@ app.use(express.json());
 
 const STORE = '4274e2-4b.myshopify.com';
 const PORT = process.env.PORT || 3000;
-const API_VERSION = '2025-10';  // ← UPDATED (was 2025-01, now sunset)
+const API_VERSION = '2025-10';
 const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || '61264f971b9546b1a3fd628dbb25d57e';
 const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
 
-// Access token — set via env SHOPIFY_TOKEN, or exchanged via /oauth/callback
 let ACCESS_TOKEN = process.env.SHOPIFY_TOKEN || null;
 
-console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING'}`);
-console.log(`  Client Secret : ${CLIENT_SECRET ? '✓ set' : '✗ MISSING'}`);
+console.log(`✓ Mystic backend starting`);
+console.log(`  Store       : ${STORE}`);
 console.log(`  API version : ${API_VERSION}`);
+console.log(`  Token       : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING'}`);
 
-// ─── Shopify helper ───────────────────────────────────────────────────────────
+// ─── Paginated Shopify fetch ──────────────────────────────────────────────────
+async function shopifyAll(resource, params = '') {
+  let items = [];
+  let url = `https://${STORE}/admin/api/${API_VERSION}/${resource}.json?limit=250${params ? '&' + params : ''}`;
 
-async function shopify(endpoint) {
-  const url = `https://${STORE}/admin/api/${API_VERSION}/${endpoint}`;
-  const res = await fetch(url, {
-    headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Shopify ${res.status}: ${body}`);
+  while (url) {
+    const res = await fetch(url, {
+      headers: {
+        'X-Shopify-Access-Token': ACCESS_TOKEN,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Shopify ${res.status}: ${body}`);
+    }
+    const data = await res.json();
+    const key = Object.keys(data)[0];
+    items = items.concat(data[key]);
+
+    const link = res.headers.get('Link') || '';
+    const next = link.match(/<([^>]+)>;\s*rel="next"/);
+    url = next ? next[1] : null;
   }
-  return res.json();
+  return items;
 }
 
-// ─── OAuth token exchange ─────────────────────────────────────────────────────
+// ─── OAuth ───────────────────────────────────────────────────────────────────
 app.get('/oauth/start', (req, res) => {
   const url = `https://${STORE}/admin/oauth/authorize?client_id=${CLIENT_ID}&scope=read_products,read_orders,read_all_orders&redirect_uri=https://${req.headers.host}/oauth/callback&state=mystic123`;
   res.redirect(url);
@@ -50,8 +63,7 @@ app.get('/oauth/callback', async (req, res) => {
     const data = await r.json();
     if (data.access_token) {
       ACCESS_TOKEN = data.access_token;
-      console.log(`✓ OAuth token exchanged: ${ACCESS_TOKEN.slice(0, 10)}...`);
-      res.send(`<h2>✓ Connected!</h2><p>Access token saved: <code>${ACCESS_TOKEN.slice(0, 10)}...</code></p><p>Add this to Railway as SHOPIFY_TOKEN: <strong>${ACCESS_TOKEN}</strong></p>`);
+      res.send(`<h2>✓ Connected!</h2><p>Add to Railway as SHOPIFY_TOKEN: <strong>${ACCESS_TOKEN}</strong></p>`);
     } else {
       res.status(400).json(data);
     }
@@ -60,43 +72,15 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Paginate through all pages using cursor-based pagination
-async function shopifyAll(resource, params = '') {
-  let items = [];
-  let url = `https://${STORE}/admin/api/${API_VERSION}/${resource}.json?limit=250${params ? '&' + params : ''}`;
-
-  while (url) {
-    const res = await fetch(url, {
-      headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Shopify ${res.status}: ${body}`);
-    }
-    const data = await res.json();
-    const key = Object.keys(data)[0];
-    items = items.concat(data[key]);
-
-    // Check for next page via Link header
-    const linkHeader = res.headers.get('Link') || '';
-    const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
-    url = nextMatch ? nextMatch[1] : null;
-  }
-  return items;
-}
-
-// ─── Routes ──────────────────────────────────────────────────────────────────
-
-// Health check
+// ─── Health ───────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', store: STORE, token_set: !!ACCESS_TOKEN, api_version: API_VERSION });
+  res.json({ status: 'ok', store: STORE, api_version: API_VERSION, token_set: !!ACCESS_TOKEN });
 });
 
-// GET /api/products — all active products + variants + inventory
+// ─── Products ─────────────────────────────────────────────────────────────────
 app.get('/api/products', async (req, res) => {
   try {
     const products = await shopifyAll('products', 'status=active');
-
     const result = products.map(p => ({
       shopify_id: p.id,
       title: p.title,
@@ -105,13 +89,12 @@ app.get('/api/products', async (req, res) => {
       variants: p.variants.map(v => ({
         shopify_variant_id: v.id,
         shopify_inventory_item_id: v.inventory_item_id,
-        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g, '-')}`,
+        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g,'-')}`,
         title: v.title,
         price: parseFloat(v.price),
         stock: v.inventory_quantity ?? 0
       }))
     }));
-
     res.json({ products: result, count: result.length, fetched_at: new Date().toISOString() });
   } catch (err) {
     console.error('[/api/products]', err.message);
@@ -119,126 +102,117 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// GET /api/orders?days=30 — sales velocity per SKU
+// ─── Orders ───────────────────────────────────────────────────────────────────
+// NOTE: financial_status removed from query params (deprecated in 2024-04+)
+// Filtering paid orders is done in JS on the response
 app.get('/api/orders', async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 30;
     const since = new Date();
     since.setDate(since.getDate() - days);
-    const sinceISO = since.toISOString();
 
-    const orders = await shopifyAll('orders',
-      `status=any&created_at_min=${sinceISO}`
-    );
+    const orders = await shopifyAll('orders', `status=any&created_at_min=${since.toISOString()}`);
 
-    // Aggregate quantity sold per SKU (paid orders only)
     const sales = {};
     orders.forEach(order => {
-      if (order.financial_status !== 'paid' && order.financial_status !== 'partially_paid') return;
-      order.line_items.forEach(item => {
+      const paid = ['paid','partially_paid'].includes(order.financial_status);
+      if (!paid) return;
+      (order.line_items || []).forEach(item => {
         const sku = item.sku || String(item.variant_id);
-        if (!sales[sku]) {
-          sales[sku] = { qty: 0, variant_id: item.variant_id, title: item.title, variant_title: item.variant_title };
-        }
+        if (!sales[sku]) sales[sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
         sales[sku].qty += item.quantity;
       });
     });
 
-    // Compute velocity (units/day)
     const velocity = {};
-    Object.entries(sales).forEach(([sku, data]) => {
-      velocity[sku] = {
-        qty_sold: data.qty,
-        units_per_day: parseFloat((data.qty / days).toFixed(3)),
-        title: data.title,
-        variant_title: data.variant_title
-      };
+    Object.entries(sales).forEach(([sku, d]) => {
+      velocity[sku] = { qty_sold: d.qty, units_per_day: parseFloat((d.qty/days).toFixed(3)), title: d.title, variant_title: d.variant_title };
     });
 
-    res.json({
-      velocity,
-      order_count: orders.length,
-      days_analyzed: days,
-      period_start: sinceISO,
-      fetched_at: new Date().toISOString()
-    });
+    res.json({ velocity, order_count: orders.length, days_analyzed: days, fetched_at: new Date().toISOString() });
   } catch (err) {
     console.error('[/api/orders]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/sync — products + velocity in one call (used by app on load)
+// ─── Sync (products + velocity in one call) ───────────────────────────────────
 app.get('/api/sync', async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 30;
 
-    // Run both in parallel
-    const [productsRes, ordersRes] = await Promise.all([
-      (async () => {
-        const products = await shopifyAll('products', 'status=active');
-        return products.map(p => ({
-          shopify_id: p.id,
-          title: p.title,
-          handle: p.handle,
-          image: p.images?.[0]?.src || null,
-          variants: p.variants.map(v => ({
-            shopify_variant_id: v.id,
-            shopify_inventory_item_id: v.inventory_item_id,
-            sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g, '-')}`,
-            title: v.title,
-            price: parseFloat(v.price),
-            stock: v.inventory_quantity ?? 0
-          }))
-        }));
-      })(),
-      (async () => {
-        const since = new Date();
-        since.setDate(since.getDate() - days);
-        const orders = await shopifyAll('orders',
-          `status=any&created_at_min=${since.toISOString()}`
-        );
-        const sales = {};
-        const market = {};
-        orders.forEach(order => {
-          // Only count paid orders for velocity
-          const isPaid = order.financial_status === 'paid' || order.financial_status === 'partially_paid';
-          if (isPaid) {
-            order.line_items.forEach(item => {
-              const sku = item.sku || String(item.variant_id);
-              if (!sales[sku]) sales[sku] = { qty: 0 };
-              sales[sku].qty += item.quantity;
-            });
-          }
-          // Market breakdown — all orders
-          const country = order.billing_address?.country_code || order.shipping_address?.country_code || 'XX';
-          if (!market[country]) market[country] = { qty: 0, revenue: 0 };
-          market[country].qty += 1;
-          market[country].revenue += parseFloat(order.total_price || 0);
-        });
-        const velocity = {};
-        Object.entries(sales).forEach(([sku, d]) => {
-          velocity[sku] = parseFloat((d.qty / days).toFixed(3));
-        });
-        return { velocity, order_count: orders.length, market_breakdown: market };
-      })()
-    ]);
+    // Products — mandatory
+    const rawProducts = await shopifyAll('products', 'status=active');
+    const products = rawProducts.map(p => ({
+      shopify_id: p.id,
+      title: p.title,
+      handle: p.handle,
+      image: p.images?.[0]?.src || null,
+      variants: p.variants.map(v => ({
+        shopify_variant_id: v.id,
+        shopify_inventory_item_id: v.inventory_item_id,
+        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g,'-')}`,
+        title: v.title,
+        price: parseFloat(v.price),
+        stock: v.inventory_quantity ?? 0
+      }))
+    }));
+
+    // Orders — optional (velocity & market data)
+    // If this fails we still return products so the sync is never fully blocked
+    let velocity = {};
+    let market_breakdown = {};
+    let order_count = 0;
+    let orders_error = null;
+
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - days);
+      const orders = await shopifyAll('orders', `status=any&created_at_min=${since.toISOString()}`);
+      order_count = orders.length;
+
+      orders.forEach(order => {
+        const paid = ['paid','partially_paid'].includes(order.financial_status);
+        if (paid) {
+          (order.line_items || []).forEach(item => {
+            const sku = item.sku || String(item.variant_id);
+            if (!velocity[sku]) velocity[sku] = 0;
+            velocity[sku] += item.quantity;
+          });
+        }
+        const country = order.billing_address?.country_code || order.shipping_address?.country_code || 'XX';
+        if (!market_breakdown[country]) market_breakdown[country] = { qty: 0, revenue: 0 };
+        market_breakdown[country].qty += 1;
+        market_breakdown[country].revenue += parseFloat(order.total_price || 0);
+      });
+
+      // Convert to per-day velocity
+      Object.keys(velocity).forEach(sku => {
+        velocity[sku] = parseFloat((velocity[sku] / days).toFixed(3));
+      });
+
+    } catch(ordErr) {
+      console.error('[/api/sync] orders fetch failed (non-fatal):', ordErr.message);
+      orders_error = ordErr.message;
+    }
 
     res.json({
-      products: productsRes,
-      velocity: ordersRes.velocity,
-      market_breakdown: ordersRes.market_breakdown,
-      order_count: ordersRes.order_count,
+      products,
+      velocity,
+      market_breakdown,
+      order_count,
+      orders_error,  // null if ok, error string if orders failed
       days_analyzed: days,
       synced_at: new Date().toISOString()
     });
+
   } catch (err) {
     console.error('[/api/sync]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/drafts — draft products only (for future drop preview)
+// ─── Drafts ───────────────────────────────────────────────────────────────────
 app.get('/api/drafts', async (req, res) => {
   try {
     const products = await shopifyAll('products', 'status=draft');
@@ -250,7 +224,7 @@ app.get('/api/drafts', async (req, res) => {
       status: 'draft',
       variants: p.variants.map(v => ({
         shopify_variant_id: v.id,
-        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g, '-')}`,
+        sku: v.sku || `${p.handle}-${v.title.toLowerCase().replace(/\s/g,'-')}`,
         title: v.title,
         price: parseFloat(v.price),
         stock: v.inventory_quantity ?? 0
@@ -264,8 +238,5 @@ app.get('/api/drafts', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✓ Mystic backend running on port ${PORT}`);
-  console.log(`  Store : ${STORE}`);
-  console.log(`  API   : ${API_VERSION}`);
-  console.log(`  Token : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING — go to /oauth/start'}`);
+  console.log(`✓ Listening on port ${PORT}`);
 });
