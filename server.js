@@ -86,6 +86,7 @@ app.get('/api/products', async (req, res) => {
       title: p.title,
       handle: p.handle,
       image: p.images?.[0]?.src || null,
+      product_type: p.product_type || '',
       variants: p.variants.map(v => ({
         shopify_variant_id: v.id,
         shopify_inventory_item_id: v.inventory_item_id,
@@ -148,6 +149,7 @@ app.get('/api/sync', async (req, res) => {
       title: p.title,
       handle: p.handle,
       image: p.images?.[0]?.src || null,
+      product_type: p.product_type || '',
       variants: p.variants.map(v => ({
         shopify_variant_id: v.id,
         shopify_inventory_item_id: v.inventory_item_id,
@@ -221,6 +223,7 @@ app.get('/api/drafts', async (req, res) => {
       title: p.title,
       handle: p.handle,
       image: p.images?.[0]?.src || null,
+      product_type: p.product_type || '',
       status: 'draft',
       variants: p.variants.map(v => ({
         shopify_variant_id: v.id,
