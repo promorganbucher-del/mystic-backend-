@@ -193,6 +193,34 @@ app.get('/api/sync', async (req, res) => {
         velocity[sku] = parseFloat((velocity[sku] / days).toFixed(3));
       });
 
+      // Monthly sales breakdown — fetch 12 months of orders
+      const monthly_sales = {};
+      const yearAgo = new Date();
+      yearAgo.setMonth(yearAgo.getMonth() - 12);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${yearAgo.toISOString()}`);
+      allOrders.forEach(order => {
+        const paid = ['paid','partially_paid'].includes(order.financial_status);
+        if (!paid) return;
+        const month = order.created_at.slice(0, 7); // "2026-08"
+        if (!monthly_sales[month]) monthly_sales[month] = {};
+        (order.line_items || []).forEach(item => {
+          const sku = item.sku || String(item.variant_id);
+          if (!monthly_sales[month][sku]) monthly_sales[month][sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
+          monthly_sales[month][sku].qty += item.quantity;
+        });
+      });
+
+      res.json({
+        products,
+        velocity,
+        market_breakdown,
+        monthly_sales,
+        order_count,
+        orders_error: null,
+        days_analyzed: days,
+        synced_at: new Date().toISOString()
+      });
+      return;
     } catch(ordErr) {
       console.error('[/api/sync] orders fetch failed (non-fatal):', ordErr.message);
       orders_error = ordErr.message;
