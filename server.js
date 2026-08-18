@@ -170,54 +170,48 @@ app.get('/api/sync', async (req, res) => {
     try {
       const since = new Date();
       since.setDate(since.getDate() - days);
-      const orders = await shopifyAll('orders', `status=any&created_at_min=${since.toISOString()}`);
-      order_count = orders.length;
+      // Fetch 12 months of orders once — covers both velocity window and monthly breakdown
+      const yearAgo = new Date();
+      yearAgo.setMonth(yearAgo.getMonth() - 12);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${yearAgo.toISOString()}`);
 
-      orders.forEach(order => {
+      const monthly_sales = {};
+      allOrders.forEach(order => {
         const paid = ['paid','partially_paid'].includes(order.financial_status);
-        if (paid) {
-          (order.line_items || []).forEach(item => {
-            const sku = item.sku || String(item.variant_id);
+        if (!paid) return;
+        const orderDate = new Date(order.created_at);
+        const month = order.created_at.slice(0, 7);
+        if (!monthly_sales[month]) monthly_sales[month] = {};
+
+        (order.line_items || []).forEach(item => {
+          const sku = item.sku || String(item.variant_id);
+          // Monthly breakdown
+          if (!monthly_sales[month][sku]) monthly_sales[month][sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
+          monthly_sales[month][sku].qty += item.quantity;
+          // Velocity (only within the days window)
+          if (orderDate >= since) {
             if (!velocity[sku]) velocity[sku] = 0;
             velocity[sku] += item.quantity;
-          });
+          }
+        });
+        // Market breakdown (only within the days window)
+        if (orderDate >= since) {
+          const country = order.billing_address?.country_code || order.shipping_address?.country_code || 'XX';
+          if (!market_breakdown[country]) market_breakdown[country] = { qty: 0, revenue: 0 };
+          market_breakdown[country].qty += 1;
+          market_breakdown[country].revenue += parseFloat(order.total_price || 0);
         }
-        const country = order.billing_address?.country_code || order.shipping_address?.country_code || 'XX';
-        if (!market_breakdown[country]) market_breakdown[country] = { qty: 0, revenue: 0 };
-        market_breakdown[country].qty += 1;
-        market_breakdown[country].revenue += parseFloat(order.total_price || 0);
       });
+      order_count = allOrders.filter(o => new Date(o.created_at) >= since).length;
 
       // Convert to per-day velocity
       Object.keys(velocity).forEach(sku => {
         velocity[sku] = parseFloat((velocity[sku] / days).toFixed(3));
       });
 
-      // Monthly sales breakdown — fetch 12 months of orders
-      const monthly_sales = {};
-      const yearAgo = new Date();
-      yearAgo.setMonth(yearAgo.getMonth() - 12);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${yearAgo.toISOString()}`);
-      allOrders.forEach(order => {
-        const paid = ['paid','partially_paid'].includes(order.financial_status);
-        if (!paid) return;
-        const month = order.created_at.slice(0, 7); // "2026-08"
-        if (!monthly_sales[month]) monthly_sales[month] = {};
-        (order.line_items || []).forEach(item => {
-          const sku = item.sku || String(item.variant_id);
-          if (!monthly_sales[month][sku]) monthly_sales[month][sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
-          monthly_sales[month][sku].qty += item.quantity;
-        });
-      });
-
       res.json({
-        products,
-        velocity,
-        market_breakdown,
-        monthly_sales,
-        order_count,
-        orders_error: null,
-        days_analyzed: days,
+        products, velocity, market_breakdown, monthly_sales,
+        order_count, orders_error: null, days_analyzed: days,
         synced_at: new Date().toISOString()
       });
       return;
