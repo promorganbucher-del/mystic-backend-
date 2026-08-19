@@ -19,11 +19,13 @@ console.log(`  API version : ${API_VERSION}`);
 console.log(`  Token       : ${ACCESS_TOKEN ? '✓ set' : '✗ MISSING'}`);
 
 // ─── Paginated Shopify fetch ──────────────────────────────────────────────────
-async function shopifyAll(resource, params = '') {
+async function shopifyAll(resource, params = '', maxPages = 50) {
   let items = [];
   let url = `https://${STORE}/admin/api/${API_VERSION}/${resource}.json?limit=250${params ? '&' + params : ''}`;
+  let page = 0;
 
-  while (url) {
+  while (url && page < maxPages) {
+    page++;
     const res = await fetch(url, {
       headers: {
         'X-Shopify-Access-Token': ACCESS_TOKEN,
@@ -37,11 +39,13 @@ async function shopifyAll(resource, params = '') {
     const data = await res.json();
     const key = Object.keys(data)[0];
     items = items.concat(data[key]);
+    console.log(`  [${resource}] page ${page} → ${data[key].length} items (total ${items.length})`);
 
     const link = res.headers.get('Link') || '';
     const next = link.match(/<([^>]+)>;\s*rel="next"/);
     url = next ? next[1] : null;
   }
+  if (url) console.warn(`  [${resource}] hit maxPages cap (${maxPages}) — stopping pagination`);
   return items;
 }
 
@@ -139,11 +143,14 @@ app.get('/api/orders', async (req, res) => {
 
 // ─── Sync (products + velocity in one call) ───────────────────────────────────
 app.get('/api/sync', async (req, res) => {
+  console.log('→ /api/sync called at', new Date().toISOString());
   try {
     const days = parseInt(req.query.days) || 30;
 
     // Products — mandatory
+    console.log('  Fetching products…');
     const rawProducts = await shopifyAll('products', 'status=active');
+    console.log(`  ✓ ${rawProducts.length} products fetched`);
     const products = rawProducts.map(p => ({
       shopify_id: p.id,
       title: p.title,
@@ -174,7 +181,9 @@ app.get('/api/sync', async (req, res) => {
       const threeMonthsAgo = new Date();
       threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
       const fetchSince = since < threeMonthsAgo ? since : threeMonthsAgo;
+      console.log(`  Fetching orders since ${fetchSince.toISOString().slice(0,10)}…`);
       const allOrders = await shopifyAll('orders', `status=any&created_at_min=${fetchSince.toISOString()}`);
+      console.log(`  ✓ ${allOrders.length} orders fetched`);
 
       const monthly_sales = {};
       allOrders.forEach(order => {
