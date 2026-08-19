@@ -170,10 +170,11 @@ app.get('/api/sync', async (req, res) => {
     try {
       const since = new Date();
       since.setDate(since.getDate() - days);
-      // Fetch 12 months of orders once — covers both velocity window and monthly breakdown
-      const yearAgo = new Date();
-      yearAgo.setMonth(yearAgo.getMonth() - 12);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${yearAgo.toISOString()}`);
+      // Fetch 3 months of orders (covers velocity window + recent monthly breakdown)
+      const threeMonthsAgo = new Date();
+      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+      const fetchSince = since < threeMonthsAgo ? since : threeMonthsAgo;
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${fetchSince.toISOString()}`);
 
       const monthly_sales = {};
       allOrders.forEach(order => {
