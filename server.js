@@ -177,27 +177,32 @@ app.get('/api/sync', async (req, res) => {
     try {
       const since = new Date();
       since.setDate(since.getDate() - days);
-      // Fetch 3 months of orders (covers velocity window + recent monthly breakdown)
-      const threeMonthsAgo = new Date();
-      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-      const fetchSince = since < threeMonthsAgo ? since : threeMonthsAgo;
-      console.log(`  Fetching orders since ${fetchSince.toISOString().slice(0,10)}…`);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${fetchSince.toISOString()}`);
+      // Fetch ~35 days fixed (covers a full month for sales) — velocity filters its own window within this
+      const ordersSince = new Date();
+      ordersSince.setDate(ordersSince.getDate() - Math.max(days, 35));
+      console.log(`  Fetching orders since ${ordersSince.toISOString().slice(0,10)}…`);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,line_items,billing_address,shipping_address,total_price`, 20);
       console.log(`  ✓ ${allOrders.length} orders fetched`);
 
       const monthly_sales = {};
+      const daily_sales = {};
       allOrders.forEach(order => {
         const paid = ['paid','partially_paid'].includes(order.financial_status);
         if (!paid) return;
         const orderDate = new Date(order.created_at);
         const month = order.created_at.slice(0, 7);
+        const day = order.created_at.slice(0, 10);
         if (!monthly_sales[month]) monthly_sales[month] = {};
+        if (!daily_sales[day]) daily_sales[day] = {};
 
         (order.line_items || []).forEach(item => {
           const sku = item.sku || String(item.variant_id);
           // Monthly breakdown
           if (!monthly_sales[month][sku]) monthly_sales[month][sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
           monthly_sales[month][sku].qty += item.quantity;
+          // Daily breakdown
+          if (!daily_sales[day][sku]) daily_sales[day][sku] = { qty: 0 };
+          daily_sales[day][sku].qty += item.quantity;
           // Velocity (only within the days window)
           if (orderDate >= since) {
             if (!velocity[sku]) velocity[sku] = 0;
@@ -220,7 +225,7 @@ app.get('/api/sync', async (req, res) => {
       });
 
       res.json({
-        products, velocity, market_breakdown, monthly_sales,
+        products, velocity, market_breakdown, monthly_sales, daily_sales,
         order_count, orders_error: null, days_analyzed: days,
         synced_at: new Date().toISOString()
       });
