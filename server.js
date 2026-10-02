@@ -181,15 +181,17 @@ app.get('/api/sync', async (req, res) => {
       const ordersSince = new Date();
       ordersSince.setDate(ordersSince.getDate() - Math.max(days, 35));
       console.log(`  Fetching orders since ${ordersSince.toISOString().slice(0,10)}…`);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,cancelled_at,refunds,line_items,billing_address,shipping_address,total_price`, 20);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,cancelled_at,source_name,refunds,line_items,billing_address,shipping_address,total_price`, 20);
       console.log(`  ✓ ${allOrders.length} orders fetched`);
 
       const monthly_sales = {};
       const daily_sales = {};
       allOrders.forEach(order => {
+        if (order.cancelled_at) return; // exclude cancelled orders
         const paid = ['paid','partially_paid'].includes(order.financial_status);
         if (!paid) return;
-        if (order.cancelled_at) return; // exclude cancelled orders
+        // Exclude exchange orders (created by Shopify exchanges — they have source_name 'exchange')
+        if (order.source_name === 'exchange') return;
         const orderDate = new Date(order.created_at);
         const month = order.created_at.slice(0, 7);
         const day = order.created_at.slice(0, 10);
@@ -217,7 +219,7 @@ app.get('/api/sync', async (req, res) => {
           // Velocity (only within the days window)
           if (orderDate >= since) {
             if (!velocity[sku]) velocity[sku] = 0;
-            velocity[sku] += item.quantity;
+            velocity[sku] += netQty;
           }
         });
         // Market breakdown (only within the days window)
