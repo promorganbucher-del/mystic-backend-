@@ -181,7 +181,7 @@ app.get('/api/sync', async (req, res) => {
       const ordersSince = new Date();
       ordersSince.setDate(ordersSince.getDate() - Math.max(days, 35));
       console.log(`  Fetching orders since ${ordersSince.toISOString().slice(0,10)}…`);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,cancelled_at,line_items,billing_address,shipping_address,total_price`, 20);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,cancelled_at,refunds,line_items,billing_address,shipping_address,total_price`, 20);
       console.log(`  ✓ ${allOrders.length} orders fetched`);
 
       const monthly_sales = {};
@@ -196,14 +196,24 @@ app.get('/api/sync', async (req, res) => {
         if (!monthly_sales[month]) monthly_sales[month] = {};
         if (!daily_sales[day]) daily_sales[day] = {};
 
+        // Build refund map for this order: line_item_id -> refunded qty
+        const refundedQty = {};
+        (order.refunds || []).forEach(refund => {
+          (refund.refund_line_items || []).forEach(rli => {
+            refundedQty[rli.line_item_id] = (refundedQty[rli.line_item_id] || 0) + rli.quantity;
+          });
+        });
+
         (order.line_items || []).forEach(item => {
           const sku = item.sku || String(item.variant_id);
+          const netQty = item.quantity - (refundedQty[item.id] || 0);
+          if (netQty <= 0) return; // fully refunded
           // Monthly breakdown
           if (!monthly_sales[month][sku]) monthly_sales[month][sku] = { qty: 0, title: item.title, variant_title: item.variant_title };
-          monthly_sales[month][sku].qty += item.quantity;
+          monthly_sales[month][sku].qty += netQty;
           // Daily breakdown
           if (!daily_sales[day][sku]) daily_sales[day][sku] = { qty: 0 };
-          daily_sales[day][sku].qty += item.quantity;
+          daily_sales[day][sku].qty += netQty;
           // Velocity (only within the days window)
           if (orderDate >= since) {
             if (!velocity[sku]) velocity[sku] = 0;
