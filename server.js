@@ -181,7 +181,7 @@ app.get('/api/sync', async (req, res) => {
       const ordersSince = new Date();
       ordersSince.setDate(ordersSince.getDate() - Math.max(days, 35));
       console.log(`  Fetching orders since ${ordersSince.toISOString().slice(0,10)}…`);
-      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,line_items,billing_address,shipping_address,total_price`, 20);
+      const allOrders = await shopifyAll('orders', `status=any&created_at_min=${ordersSince.toISOString()}&fields=created_at,financial_status,cancelled_at,line_items,billing_address,shipping_address,total_price`, 20);
       console.log(`  ✓ ${allOrders.length} orders fetched`);
 
       const monthly_sales = {};
@@ -189,6 +189,7 @@ app.get('/api/sync', async (req, res) => {
       allOrders.forEach(order => {
         const paid = ['paid','partially_paid'].includes(order.financial_status);
         if (!paid) return;
+        if (order.cancelled_at) return; // exclude cancelled orders
         const orderDate = new Date(order.created_at);
         const month = order.created_at.slice(0, 7);
         const day = order.created_at.slice(0, 10);
